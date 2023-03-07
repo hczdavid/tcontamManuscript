@@ -1,0 +1,224 @@
+---
+title: "Analysis of oral microbiome dataset"
+author: "David Huang, Craig Gin and Ben Callahan"
+date: "03/06/2023"
+output: html_document
+---
+
+The data set is obtained from [DecontamManuscript Github repository](https://github.com/benjjneb/DecontamManuscript) ([Davis et al. 2018](https://doi.org/10.1186/s40168-018-0605-2)).
+
+## Set up
+
+```{r, message=FALSE, warning=FALSE}
+
+# Install decontam package from the Github
+# library(devtools)
+# devtools::install_github("hczdavid/decontam")
+
+# load the packages
+pkgs <- c("tidyverse", "decontam", "RColorBrewer", "ggpubr", "caret")
+lapply(pkgs, require, character.only = TRUE)
+
+# load the data
+inpath  <- "rdata/"
+outpath <- "output/"
+
+load(paste0(inpath, "oral_data_new.Rdata"))
+otu  <- as.matrix(otu)
+```
+
+## Run dectonam, tcontam and tcontamL
+
+```{r}
+res_decontam  <- isContaminant(otu, conc=conc, method='frequency') # default frequency method is "decontam"
+res_tcontam   <- isContaminant(otu, conc=conc, method='frequency', frequency.method = "tcontam")
+res_tcontamL  <- isContaminant(otu, conc=conc, method='frequency', frequency.method = "tcontamL")
+
+allres        <- data.frame(seqID    = rownames(res_decontam),  
+                            prev     = res_decontam$prev, 
+                            decontam = res_decontam$p, 
+                            tcontam  = res_tcontam$p, 
+                            tcontamL = res_tcontamL$p)
+
+# add the label from reference database
+# --------------------------------------------------------------- #
+taxa$Group <- "Ambiguous" 
+is.oral    <- taxa$GenusREC %in% oral & !taxa$GenusREC %in% contam
+taxa$Group[is.oral] <- "Oral"
+is.contam <- taxa$GenusREC %in% contam & !taxa$GenusREC %in% oral
+taxa$Group[is.contam] <- "Contaminant"
+taxasub <- taxa[,c(1, 16, 18)]
+# --------------------------------------------------------------- #
+
+allres <- allres %>% left_join(taxasub, by = c("seqID" = "Id"))
+allres$prevgroup <- cut(allres$prev, c(0, 2, 5, 10, 9999), labels=c("2", "3-5", "6-10", "11+"))
+allres$reads <- colSums(otu)
+
+```
+
+## Distribution of the overall p-values or p-scores 
+
+```{r, message=FALSE, warning=FALSE}
+allresplot <- allres %>% gather(key = "method", value = "score", c(3:5))
+allresplot$method <- factor(allresplot$method, levels = c("tcontam", "tcontamL", "decontam"))
+# histogram
+histo_p <- ggplot(allresplot, aes(x = score, fill=prevgroup)) + 
+  geom_histogram() + labs(x = 'p-values (or scores)', y='Number ASVs', fill = "Prevalence") + 
+  facet_wrap(~method)+
+  theme_bw() + 
+  theme(legend.position = "top", axis.title = element_text(size=15), axis.text = element_text(size = 12),
+        strip.text = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.title  = element_text(size = 15))
+histo_p
+#ggsave(histo_p, filename = "hist_oral_new.png", width = 8, height = 4, dpi = 500)
+
+```
+
+## Comparison of the pattern for tcontam, tcontamL and decontam
+```{r}
+
+allres$Group <- factor(allres$Group, levels = c("Contaminant",  "Oral", "Ambiguous" ))
+
+# overall pattern
+dt_plotall <- ggplot(allres, aes(x = decontam, y = tcontam, col = Group)) + 
+  geom_point(size = 1) + labs(color = "Group") + 
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "gray") + 
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "gray") + 
+  geom_abline(intercept = 0, slope = 1,linetype = "dashed", color = "gray")+
+  theme_bw() + 
+  theme(legend.position = "top", axis.title = element_text(size=15), axis.text = element_text(size = 12),
+        strip.text = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title  = element_text(size = 15)) +
+  scale_color_manual(values = c(RColorBrewer::brewer.pal(5, "Set1")[c(5,4)], "gray90"))
+dt_plotall
+
+ttl_plotall <- ggplot(allres, aes(x = tcontamL, y = tcontam, col = Group)) + 
+  geom_point(size = 1) + labs(color = "Group") + 
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "gray") + 
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "gray") + 
+  geom_abline(intercept = 0, slope = 1,linetype = "dashed", color = "gray")+
+  theme_bw() + 
+  theme(legend.position = "top", axis.title = element_text(size=15), axis.text = element_text(size = 12),
+        strip.text = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title  = element_text(size = 15)) +
+  scale_color_manual(values = c(RColorBrewer::brewer.pal(5, "Set1")[c(5,4)], "gray90"))
+ttl_plotall
+
+
+# allpattern_oral <- ggarrange(histo_p, ggarrange(dt_plotall, ttl_plotall, labels = c("B", "C"), nrow = 1, widths = c(0.5,0.5), common.legend = T), labels = c("A", ""), nrow = 2, heights = c(0.5, 0.4))
+# ggsave(allpattern_oral, filename = "allpattern_oral.png", width = 10, height = 8, dpi = 800)
+
+
+```
+
+## Comparison of the performance for tcontam, tcontamL and decontam at ASV level
+
+```{r}
+
+allres_sub <- allres %>% filter(Group != "Ambiguous")
+allres_sub$Group <- factor(allres_sub$Group, levels = c("Oral", "Contaminant"))
+
+cutoff <- 0.05
+
+allres_sub$tcon_res  <- allres_sub$tcontam < cutoff
+allres_sub$decon_res <- allres_sub$decontam < cutoff
+allres_sub$tconL_res <- allres_sub$tcontamL < cutoff
+
+# confusion matrix 
+table(allres_sub$Group, allres_sub$tcon_res)
+table(allres_sub$Group, allres_sub$tconL_res)
+table(allres_sub$Group, allres_sub$decon_res)
+
+
+
+# F score
+mythresh <- seq(0.01, 0.5, 0.01)
+dF <- c()
+pF <- c()
+pFl <- c()
+
+allres_sub$Group <- as.character(allres_sub$Group)
+
+for(i in 1:length(mythresh)){
+  
+  myclass1 <- caret::confusionMatrix(as.factor(ifelse(allres_sub$decontam > mythresh[i], "Oral", "Contaminant")), as.factor(allres_sub$Group), mode = "everything")
+  myclass2 <- caret::confusionMatrix(as.factor(ifelse(allres_sub$tcontam > mythresh[i], "Oral", "Contaminant")), as.factor(allres_sub$Group), mode = "everything")
+  myclass3 <- caret::confusionMatrix(as.factor(ifelse(allres_sub$tcontamL > mythresh[i], "Oral", "Contaminant")), as.factor(allres_sub$Group), mode = "everything")
+ 
+  dF[i] <- myclass1$byClass["F1"]
+  pF[i] <- myclass2$byClass["F1"]
+  pFl[i] <- myclass3$byClass["F1"]
+}
+
+fres     <- data.frame(Threshold = mythresh, decontam = dF, tcomtam = pF, tcontamL  = pFl) 
+fresplot <- fres %>% gather(key = "Method", value = "F1", 2:4)
+
+f1score <- ggplot(fresplot, aes(x = Threshold, y = F1, group = Method, color = Method)) + 
+  geom_point() + 
+  geom_line() + 
+  theme_bw() + ylab("F1 Score")+ #ylim(c(0.9, 1))+
+  theme(legend.position = c(0.8,0.2),axis.text = element_text(size=12),
+        axis.title = element_text(size = 15), legend.title = element_text(size = 12), legend.text =  element_text(size = 12) )
+f1score
+#ggsave(f1score, filename = "f1score3.png", width = 5, height = 5, dpi = 500)
+
+```
+## Comparison of the performance for tcontam, tcontamL and decontam at reads level
+
+```{r}
+
+allres_sub_reads <- allres_sub[, c("decontam", "tcontam", "tcontamL", "Group", "reads")]
+allres_sub_reads$Group <- ifelse(allres_sub_reads$Group == "Oral", 0, 1)
+reads <- allres_sub$reads
+
+readsdata <- c()
+for(i in 1:nrow(allres_sub_reads)){
+  readsdata <- rbind(readsdata, matrix(t(allres_sub_reads[i,])[,1], nrow = reads[i], ncol = 5, byrow = T))
+}
+colnames(readsdata) <- colnames(allres_sub_reads)
+readsdata <- as.data.frame(readsdata)
+readsdata$Group <- ifelse(readsdata$Group == 0, "Oral", "Contaminant")
+
+
+# F score
+dFreads <- c()
+pFreads <- c()
+pFlreads <- c()
+
+readsdata$Group <- as.character(readsdata$Group)
+
+for(i in 1:length(mythresh)){
+  
+  myclass1 <- caret::confusionMatrix(as.factor(ifelse(readsdata$decontam > mythresh[i], "Oral", "Contaminant")), as.factor(readsdata$Group), mode = "everything")
+  myclass2 <- caret::confusionMatrix(as.factor(ifelse(readsdata$tcontam > mythresh[i], "Oral", "Contaminant")), as.factor(readsdata$Group), mode = "everything")
+  myclass3 <- caret::confusionMatrix(as.factor(ifelse(readsdata$tcontamL > mythresh[i], "Oral", "Contaminant")), as.factor(readsdata$Group), mode = "everything")
+ 
+  dFreads[i] <- myclass1$byClass["F1"]
+  pFreads[i] <- myclass2$byClass["F1"]
+  pFlreads[i] <- myclass3$byClass["F1"]
+}
+
+fres_reads    <- data.frame(Threshold = mythresh, decontam = dFreads, tcomtam = pFreads, tcontamL  = pFlreads)
+fresplotreads <- fres_reads %>% gather(key = "Method", value = "F1", 2:4)
+
+f1score <- ggplot(fresplotreads, aes(x = Threshold, y = F1, group = Method, color = Method)) + 
+  geom_point() + 
+  geom_line() + 
+  theme_bw() + ylab("F1 Score")+ ylim(c(0.9, 1))+
+  theme(legend.position = c(0.8,0.2),axis.text = element_text(size=12),
+        axis.title = element_text(size = 15), legend.title = element_text(size = 12), legend.text =  element_text(size = 12) )
+f1score
+```
+
+## Example of multiple test adjustment
+```{r}
+allres$tcontamLadj<- p.adjust(allres$tcontamL, method = "BH")
+allres_sub <- allres %>% filter(Group != "Ambiguous")
+allres_sub$tconL_adj_res <- allres_sub$tcontamLadj < cutoff
+allres_sub$Group <- factor(allres_sub$Group, levels = c("Oral", "Contaminant"))
+table(allres_sub$Group, allres_sub$tconL_adj_res)
+```
+
